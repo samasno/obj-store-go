@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	models "github.com/samasno/object-store/internal/model"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -16,16 +18,18 @@ type testConfig struct {
 	URI string `json:"uri"`
 }
 
+var testEmails []string = []string{"test1@email.com", "test2@email.com"}
+
 func TestCreateUser(t *testing.T) {
 	config := getTestConfig()
 
-	u, err := NewUserRepo(config.URI)
+	u, err := NewUserRepo(config.URI, testDatabase)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
 
 	tu := models.User{
-		Email:    "email@email.com",
+		Email:    testEmails[0],
 		Password: "newpassword",
 	}
 
@@ -35,19 +39,24 @@ func TestCreateUser(t *testing.T) {
 	}
 
 	println(string(id.Hex()))
+	err = u.CloseConnection()
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	cleanupTestUsers(testEmails[0])
 }
 
 func TestFetchUserByEmail(t *testing.T) {
 	config := getTestConfig()
 
-	u, err := NewUserRepo(config.URI)
+	u, err := NewUserRepo(config.URI, testDatabase)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
 
-	email := "email@email.com"
+	createTestUsers(testEmails...)
 
-	user, err := u.FetchUserByEmail(email)
+	user, err := u.FetchUserByEmail(testEmails[0])
 	if err != nil {
 		t.Fatal(err.Error())
 	}
@@ -55,20 +64,30 @@ func TestFetchUserByEmail(t *testing.T) {
 	println("Got user")
 	println(user.Email)
 	println(user.Password)
+	cleanupTestUsers(testEmails...)
 }
 
-func TestUniqueEmailConstraint(t *testing.T) {
+func TestUpdateUserPassword(t *testing.T) {
+	u := getTestUsersRepo()
 
-}
+	np := "testchangepassword"
 
-func TestUpdateUser(t *testing.T) {
+	ids := createTestUsers(testEmails...)
 
+	d, err := u.UpdateUserPassword(ids[0], np)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	fmt.Printf("modified %d document\n", d)
+
+	cleanupTestUsers(testEmails...)
 }
 
 func TestDeleteUserByID(t *testing.T) {
 	config := getTestConfig()
 
-	u, err := NewUserRepo(config.URI)
+	u, err := NewUserRepo(config.URI, testDatabase)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
@@ -94,17 +113,54 @@ func TestDeleteUserByID(t *testing.T) {
 func TestDeleteUserByEmail(t *testing.T) {
 	config := getTestConfig()
 
-	u, err := NewUserRepo(config.URI)
+	u, err := NewUserRepo(config.URI, testDatabase)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
 
-	d, err := u.DeleteUserByEmail("email@email.com")
+	createTestUsers(testEmails...)
+
+	d, err := u.DeleteUserByEmail(testEmails[0])
 	if err != nil {
 		t.Fatal(err.Error())
 	}
 
 	fmt.Printf("Deleted %d user records\n", d)
+
+	cleanupTestUsers(testEmails...)
+}
+
+func TestCreateTestUsers(t *testing.T) {
+	ids := createTestUsers(testEmails...)
+	for _, id := range ids {
+		println("Got test id", id.String())
+	}
+}
+
+func TestDeleteTestUsers(t *testing.T) {
+	cleanupTestUsers(testEmails...)
+}
+
+func getTestUsersRepo() *UsersRepo {
+	config := getTestConfig()
+	client, err := GetMongoDBClient(config.URI)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	db := client.Database(testDatabase)
+
+	u := &UsersRepo{
+		client: client,
+		db:     db,
+		name:   "TestRepo",
+	}
+
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	return u
 }
 
 func getTestConfig() testConfig {
@@ -118,5 +174,46 @@ func getTestConfig() testConfig {
 	if err != nil {
 		log.Fatal(err.Error())
 	}
+
 	return config
+}
+
+func createTestUsers(emails ...string) []primitive.ObjectID {
+	u := getTestUsersRepo()
+	password := "testpassword"
+	ids := []primitive.ObjectID{}
+
+	for _, email := range emails {
+		user := models.User{
+			Email:    email,
+			Password: password,
+		}
+
+		id, err := u.CreateUser(user)
+		if err != nil {
+			log.Fatal()
+		}
+		ids = append(ids, id)
+	}
+
+	return ids
+}
+
+func cleanupTestUsers(emails ...string) {
+	u := getTestUsersRepo()
+	d := 0
+
+	for _, email := range emails {
+		filter := bson.D{{"email", email}}
+		coll := u.db.Collection(usersColl)
+		res, err := coll.DeleteOne(context.Background(), filter)
+		if err != nil {
+			println("cleanupTestUsers: Error deleting " + email + "\n" + err.Error())
+		}
+
+		d += int(res.DeletedCount)
+	}
+
+	fmt.Printf("cleanupTestUsers: Deleted %d users records\n", d)
+	u.CloseConnection()
 }
