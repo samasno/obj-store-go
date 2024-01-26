@@ -15,7 +15,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-func NewUserRepo(uri string) (*UsersRepo, error) {
+func NewUserRepo(uri string, db string) (*UsersRepo, error) {
 	fn := "NewUserRepo"
 	u := &UsersRepo{}
 	u.name = "UserRepo"
@@ -26,7 +26,8 @@ func NewUserRepo(uri string) (*UsersRepo, error) {
 		log.Printf("%s: %s\n", fn, err.Error())
 		return nil, err
 	}
-	u.db = u.client.Database(defaultDatabase)
+
+	u.db = u.client.Database(db)
 
 	log.Println("NewUserRepo connected")
 
@@ -61,45 +62,6 @@ func (u *UsersRepo) CreateUser(user models.User) (primitive.ObjectID, error) { /
 	log.Printf("%s: created user with email id %s\n", fn, id.String())
 
 	return id, nil
-}
-
-func validateCreateUserInput(u *models.User) error {
-	errs := []string{}
-
-	emRgx := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-	u.ID = primitive.ObjectID{}
-	validEmail := emRgx.Match([]byte(u.Email))
-
-	if !validEmail {
-		msg := fmt.Sprintf("invalid email provided.")
-		errs = append(errs, msg)
-	}
-
-	if len(u.Password) < 6 {
-		msg := fmt.Sprintf("password must be at least 6 characters long.")
-		errs = append(errs, msg)
-	}
-
-	if len(errs) > 0 {
-		msg := strings.Join(errs, " ")
-		return fmt.Errorf(msg)
-	}
-
-	h, err := hashPassword(u.Password)
-	if err != nil {
-		return err
-	}
-	u.Password = h
-
-	return nil
-}
-
-func hashPassword(str string) (string, error) {
-	b, err := bcrypt.GenerateFromPassword([]byte(str), 10)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
 }
 
 func (u *UsersRepo) DB() *mongo.Database {
@@ -139,7 +101,7 @@ func (u *UsersRepo) FetchUserByEmail(email string) (*models.User, error) {
 	return &user, nil
 }
 
-func (u *UsersRepo) DeleteUserByEmail(email string) (int, error) { // mark user as deleted, but don`t remove record
+func (u *UsersRepo) DeleteUserByEmail(email string) (int, error) {
 	fn := u.name + ".DeleteUserByEmail"
 
 	update := bson.D{{"$set", bson.D{{"deleted", true}}}}
@@ -167,8 +129,48 @@ func (u *UsersRepo) DeleteUserByID(id primitive.ObjectID) (int, error) {
 	return d, nil
 }
 
-func (u *UsersRepo) UpdateUser(_id primitive.ObjectID, info models.User) (*models.User, error) {
-	return nil, nil
+func (u *UsersRepo) UpdateUserVerified(email string) (int, error) {
+	fn := u.name + ".UpdateUserVerified"
+
+	update := bson.D{{"$set", bson.D{{"verified", true}}}}
+	d, err := updateUser(u.db, "email", email, update)
+	if err != nil {
+		log.Printf("%s: failed to update %s\n", fn, err.Error())
+		return 0, nil
+	}
+
+	log.Printf("%s: updated %d document with email %s\n", fn, d, email)
+	return d, nil
+}
+
+func (u *UsersRepo) UpdateUserPassword(id primitive.ObjectID, password string) (int, error) {
+	fn := u.name + ".UpdateUserPassword"
+
+	if !validatePassword(password) {
+		log.Printf("%s: received invalid password\n", fn)
+		return 0, fmt.Errorf("%s: password invalid", fn)
+	}
+
+	h, err := hashPassword(password)
+	if err != nil {
+		log.Printf("%s: could not hash password\n", fn)
+		return 0, err
+	}
+
+	update := bson.D{{"$set", bson.D{{"password", h}}}}
+
+	d, err := updateUser(u.db, "_id", id, update)
+	if err != nil {
+		log.Printf("%s: failed to update password %s\n", fn, err.Error())
+		return d, nil
+	}
+
+	log.Printf("%s: update password for %d documents\n", fn, d)
+	return d, nil
+}
+
+func (u *UsersRepo) CloseConnection() error {
+	return u.client.Disconnect(context.Background())
 }
 
 func updateUser[T string | primitive.ObjectID](db *mongo.Database, key string, val T, update interface{}) (int, error) {
@@ -184,6 +186,48 @@ func updateUser[T string | primitive.ObjectID](db *mongo.Database, key string, v
 	return int(res.ModifiedCount), nil
 }
 
-func cleanupTestUsersFromDB() {
+func validateCreateUserInput(u *models.User) error {
+	errs := []string{}
 
+	u.ID = primitive.ObjectID{}
+
+	if !validateEmail(u.Email) {
+		msg := fmt.Sprintf("invalid email provided.")
+		errs = append(errs, msg)
+	}
+
+	if !validatePassword(u.Password) {
+		msg := fmt.Sprintf("password must be at least 6 characters long.")
+		errs = append(errs, msg)
+	}
+
+	if len(errs) > 0 {
+		msg := strings.Join(errs, " ")
+		return fmt.Errorf(msg)
+	}
+
+	h, err := hashPassword(u.Password)
+	if err != nil {
+		return err
+	}
+	u.Password = h
+
+	return nil
+}
+
+func validateEmail(email string) bool {
+	emRgx := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+	return emRgx.Match([]byte(email))
+}
+
+func validatePassword(password string) bool {
+	return len(password) > 6
+}
+
+func hashPassword(str string) (string, error) {
+	b, err := bcrypt.GenerateFromPassword([]byte(str), 10)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
