@@ -12,6 +12,7 @@ import (
 
 var (
 	defaultDatabase = "object-store"
+	testDatabase    = defaultDatabase
 	usersColl       = "users"
 )
 
