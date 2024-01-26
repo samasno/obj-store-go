@@ -6,10 +6,12 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	models "github.com/samasno/object-store/internal/model"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -43,6 +45,7 @@ func (u *UsersRepo) CreateUser(user models.User) (primitive.ObjectID, error) { /
 	}
 
 	user.ID = primitive.ObjectID{}
+	user.Created = primitive.NewDateTimeFromTime(time.Now())
 	res, err := coll.InsertOne(context.Background(), user)
 	if err != nil {
 		log.Printf("%s: %s\n", fn, err.Error())
@@ -99,6 +102,10 @@ func hashPassword(str string) (string, error) {
 	return string(b), nil
 }
 
+func (u *UsersRepo) DB() *mongo.Database {
+	return u.db
+}
+
 func (u *UsersRepo) FetchUserById(_id primitive.ObjectID) (*models.User, error) {
 	fn := u.name + ".FetchUserById"
 	coll := u.db.Collection(usersColl)
@@ -117,12 +124,12 @@ func (u *UsersRepo) FetchUserById(_id primitive.ObjectID) (*models.User, error) 
 }
 
 func (u *UsersRepo) FetchUserByEmail(email string) (*models.User, error) {
-	fn := "UserRepo.FetchUserByEmail"
+	fn := u.name + ".FetchUserByEmail"
 	coll := u.db.Collection(usersColl)
 
 	user := models.User{}
 
-	filter := bson.D{{"email", email}}
+	filter := bson.D{{"email", email}, {"deleted", false}}
 	err := coll.FindOne(context.Background(), filter).Decode(&user)
 	if err != nil {
 		log.Printf("%s: failed to fetch user %s\n", fn, err.Error())
@@ -132,14 +139,51 @@ func (u *UsersRepo) FetchUserByEmail(email string) (*models.User, error) {
 	return &user, nil
 }
 
-func (u *UsersRepo) DeleteUserById(_id primitive.ObjectID) error { // mark user as deleted, but don`t remove record
-	return nil
+func (u *UsersRepo) DeleteUserByEmail(email string) (int, error) { // mark user as deleted, but don`t remove record
+	fn := u.name + ".DeleteUserByEmail"
+
+	update := bson.D{{"$set", bson.D{{"deleted", true}}}}
+	d, err := updateUser(u.db, "email", email, update)
+	if err != nil {
+		log.Printf("%s: failed to delete user %s", fn, err.Error())
+		return 0, err
+	}
+
+	log.Printf("%s: deleted %d user", fn, d)
+	return d, nil
 }
 
-func (u *UsersRepo) DeleteUserByEmail(_id primitive.ObjectID) error {
-	return nil
+func (u *UsersRepo) DeleteUserByID(id primitive.ObjectID) (int, error) {
+	fn := u.name + ".DeleteUserByID"
+
+	update := bson.D{{"$set", bson.D{{"deleted", true}}}}
+	d, err := updateUser(u.db, "_id", id, update)
+	if err != nil {
+		log.Printf("%s: failed to delete user %s", fn, err.Error())
+		return 0, err
+	}
+
+	log.Printf("%s: deleted %d user", fn, d)
+	return d, nil
 }
 
 func (u *UsersRepo) UpdateUser(_id primitive.ObjectID, info models.User) (*models.User, error) {
 	return nil, nil
+}
+
+func updateUser[T string | primitive.ObjectID](db *mongo.Database, key string, val T, update interface{}) (int, error) {
+	coll := db.Collection(usersColl)
+
+	filter := bson.D{{key, val}}
+
+	res, err := coll.UpdateOne(context.Background(), filter, update)
+	if err != nil {
+		return 0, err
+	}
+
+	return int(res.ModifiedCount), nil
+}
+
+func cleanupTestUsersFromDB() {
+
 }
